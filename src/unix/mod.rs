@@ -26,6 +26,13 @@ cfg_select! {
         #[allow(unused_imports)]
         pub(crate) use bsd::libc_errno;
     }
+    target_os = "redox" => {
+        pub(crate) mod redox;
+        pub(crate) use redox as sys;
+
+        #[allow(unused_imports)]
+        pub(crate) use libc::__errno_location as libc_errno;
+    }
     _ => {
         compile_error!("Invalid cfg!");
     }

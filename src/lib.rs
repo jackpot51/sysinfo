@@ -37,7 +37,8 @@ cfg_select! {
     any(
         target_os = "macos", target_os = "ios",
         target_os = "linux", target_os = "android",
-        target_os = "freebsd", target_os = "netbsd") =>
+        target_os = "freebsd", target_os = "netbsd",
+        target_os = "redox") =>
     {
         mod unix;
         use crate::unix::sys as sys;

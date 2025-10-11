@@ -2289,6 +2289,7 @@ cfg_select! {
             target_os = "android",
             target_os = "macos",
             target_os = "ios",
+            target_os = "redox",
         )
     ) => {
         use libc::pid_t;
@@ -2383,7 +2384,7 @@ pub enum ProcessesToUpdate<'a> {
 /// information from `/proc/<pid>/` as well as all the information from `/proc/<pid>/task/<tid>/`
 /// folders. This makes the refresh mechanism a lot slower depending on the number of tasks
 /// each process has.
-///  
+///
 /// If you don't care about tasks information, use `ProcessRefreshKind::everything().without_tasks()`
 /// as much as possible.
 ///
@@ -2761,6 +2762,7 @@ pub fn get_current_pid() -> Result<Pid, &'static str> {
             target_os = "android",
             target_os = "macos",
             target_os = "ios",
+            target_os = "redox",
         ) => {
             fn inner() -> Result<Pid, &'static str> {
                 unsafe { Ok(Pid(libc::getpid())) }

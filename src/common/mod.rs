@@ -126,6 +126,7 @@ cfg_select! {
             target_os = "android",
             target_os = "macos",
             target_os = "ios",
+            target_os = "redox",
         )
     ) => {
         uid!(libc::uid_t, std::str::FromStr);

@@ -13,17 +13,44 @@ use std::{io, mem};
 
 use crate::{IpNetwork, MacAddr};
 
+#[cfg(not(target_os = "redox"))]
+use libc::{freeifaddrs, getifaddrs, ifaddrs};
+
+// Not defined on Redox
+#[cfg(target_os = "redox")]
+#[repr(C)]
+struct ifaddrs {
+    pub ifa_next: *mut ifaddrs,
+    pub ifa_name: *mut libc::c_char,
+    pub ifa_flags: libc::c_uint,
+    pub ifa_addr: *mut libc::sockaddr,
+    pub ifa_netmask: *mut libc::sockaddr,
+    pub ifa_ifu: *mut libc::sockaddr,
+    pub ifa_data: *mut libc::c_void,
+}
+
+#[cfg(target_os = "redox")]
+unsafe extern "C" fn getifaddrs(ifap: *mut *mut ifaddrs) -> libc::c_int {
+    //TODO: set errno
+    -1
+}
+
+#[cfg(target_os = "redox")]
+unsafe extern "C" fn freeifaddrs(ifa: *mut ifaddrs) {
+    //TODO
+}
+
 /// This iterator yields an interface name and address.
 pub(crate) struct InterfaceAddress {
     /// Pointer to the first element in linked list.
-    buf: *mut libc::ifaddrs,
+    buf: *mut ifaddrs,
 }
 
 impl Drop for InterfaceAddress {
     fn drop(&mut self) {
         // Safety: this struct cannot be built with a NULL `buf` field.
         unsafe {
-            libc::freeifaddrs(self.buf);
+            freeifaddrs(self.buf);
         }
     }
 }
@@ -31,7 +58,7 @@ impl Drop for InterfaceAddress {
 impl InterfaceAddress {
     pub(crate) fn new() -> Option<Self> {
         let mut ifap = null_mut();
-        if unsafe { retry_eintr!(libc::getifaddrs(&mut ifap)) } == 0 && !ifap.is_null() {
+        if unsafe { retry_eintr!(getifaddrs(&mut ifap)) } == 0 && !ifap.is_null() {
             Some(Self { buf: ifap })
         } else {
             sysinfo_debug!("`getifaddrs` failed");
@@ -49,19 +76,19 @@ impl InterfaceAddress {
 }
 
 pub(crate) struct InterfaceAddressIterator<'a> {
-    ifap: *mut libc::ifaddrs,
+    ifap: *mut ifaddrs,
     helper: InterfaceAddressHelper,
     _phantom: PhantomData<&'a ()>,
 }
 
 pub(crate) struct InterfaceAddressHelper {
-    ifap: *mut libc::ifaddrs,
+    ifap: *mut ifaddrs,
 }
 
 impl InterfaceAddressHelper {
     pub(crate) fn name(&self) -> Option<String> {
         // Safety: We assume that addr is valid for the lifetime of this body, and is not mutated.
-        let addr_ref: &libc::ifaddrs = unsafe { &*self.ifap };
+        let addr_ref: &ifaddrs = unsafe { &*self.ifap };
 
         let c_str = addr_ref.ifa_name as *const c_char;
 
@@ -80,14 +107,14 @@ impl InterfaceAddressHelper {
 
     pub(crate) fn ip(&self) -> Option<IpAddr> {
         // Safety: We assume that addr is valid for the lifetime of this body, and is not mutated.
-        let addr_ref: &libc::ifaddrs = unsafe { &*self.ifap };
+        let addr_ref: &ifaddrs = unsafe { &*self.ifap };
 
         sockaddr_to_network_addr(addr_ref.ifa_addr as *const libc::sockaddr)
     }
 
     pub(crate) fn prefix(&self) -> u8 {
         // Safety: We assume that addr is valid for the lifetime of this body, and is not mutated.
-        let addr_ref: &libc::ifaddrs = unsafe { &*self.ifap };
+        let addr_ref: &ifaddrs = unsafe { &*self.ifap };
         let netmask = sockaddr_to_network_addr(addr_ref.ifa_netmask as *const libc::sockaddr);
         netmask
             .and_then(|netmask| ip_mask_to_prefix(netmask).ok())
@@ -96,7 +123,7 @@ impl InterfaceAddressHelper {
 
     pub(crate) fn mac_addr(&self) -> Option<MacAddr> {
         // Safety: We assume that addr is valid for the lifetime of this body, and is not mutated.
-        let addr_ref: &libc::ifaddrs = unsafe { &*self.ifap };
+        let addr_ref: &ifaddrs = unsafe { &*self.ifap };
         unsafe { parse_interface_address(addr_ref) }
     }
 }
@@ -156,7 +183,7 @@ impl From<&libc::sockaddr_dl> for MacAddr {
     target_os = "netbsd",
     target_os = "ios"
 ))]
-unsafe fn parse_interface_address(ifap: &libc::ifaddrs) -> Option<MacAddr> {
+unsafe fn parse_interface_address(ifap: &ifaddrs) -> Option<MacAddr> {
     let sock_addr = ifap.ifa_addr;
     if sock_addr.is_null() {
         return None;
@@ -173,7 +200,7 @@ unsafe fn parse_interface_address(ifap: &libc::ifaddrs) -> Option<MacAddr> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe fn parse_interface_address(ifap: &libc::ifaddrs) -> Option<MacAddr> {
+unsafe fn parse_interface_address(ifap: &ifaddrs) -> Option<MacAddr> {
     use libc::sockaddr_ll;
 
     let sock_addr = ifap.ifa_addr;
@@ -191,6 +218,11 @@ unsafe fn parse_interface_address(ifap: &libc::ifaddrs) -> Option<MacAddr> {
             _ => None,
         }
     }
+}
+
+#[cfg(target_os = "redox")]
+unsafe fn parse_interface_address(ifap: &ifaddrs) -> Option<MacAddr> {
+    None
 }
 
 pub(crate) unsafe fn refresh_network_interfaces(
@@ -318,6 +350,11 @@ fn sockaddr_to_network_addr(sa: *const libc::sockaddr) -> Option<IpAddr> {
             }
         }
     }
+}
+
+#[cfg(target_os = "redox")]
+fn sockaddr_to_network_addr(sa: *const libc::sockaddr) -> Option<IpAddr> {
+    None
 }
 
 pub(crate) fn ip_mask_to_prefix(mask: IpAddr) -> Result<u8, &'static str> {

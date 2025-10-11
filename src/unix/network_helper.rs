@@ -16,8 +16,10 @@ use crate::{IpNetwork, MacAddr};
 /// This iterator yields an interface name and address.
 pub(crate) struct InterfaceAddressIterator {
     /// Pointer to the current `ifaddrs` struct.
+    #[cfg(not(target_os = "redox"))]
     ifap: *mut libc::ifaddrs,
     /// Pointer to the first element in linked list.
+    #[cfg(not(target_os = "redox"))]
     buf: *mut libc::ifaddrs,
 }
 
@@ -26,6 +28,7 @@ impl Iterator for InterfaceAddressIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         unsafe {
+            #[cfg(not(target_os = "redox"))]
             while !self.ifap.is_null() {
                 // advance the pointer until a MAC address is found
                 // Safety: `ifap` is already checked as non-null in the loop condition.
@@ -55,6 +58,7 @@ impl Iterator for InterfaceAddressIterator {
 impl Drop for InterfaceAddressIterator {
     fn drop(&mut self) {
         unsafe {
+            #[cfg(not(target_os = "redox"))]
             libc::freeifaddrs(self.buf);
         }
     }
@@ -122,14 +126,22 @@ unsafe fn parse_interface_address(ifap: &libc::ifaddrs) -> Option<MacAddr> {
 
 /// Return an iterator on (interface_name, address) pairs
 pub(crate) unsafe fn get_interface_address() -> Result<InterfaceAddressIterator, String> {
-    let mut ifap = null_mut();
-    if unsafe { retry_eintr!(libc::getifaddrs(&mut ifap)) } == 0 && !ifap.is_null() {
-        Ok(InterfaceAddressIterator { ifap, buf: ifap })
-    } else {
-        Err("failed to call getifaddrs()".to_string())
+    #[cfg(not(target_os = "redox"))]
+    {
+        let mut ifap = null_mut();
+        if unsafe { retry_eintr!(libc::getifaddrs(&mut ifap)) } == 0 && !ifap.is_null() {
+            return Ok(InterfaceAddressIterator { ifap, buf: ifap });
+        }
     }
+    Err("failed to call getifaddrs()".to_string())
 }
 
+#[cfg(target_os = "redox")]
+pub(crate) unsafe fn get_interface_ip_networks() -> HashMap<String, HashSet<IpNetwork>> {
+    HashMap::new()
+}
+
+#[cfg(not(target_os = "redox"))]
 pub(crate) unsafe fn get_interface_ip_networks() -> HashMap<String, HashSet<IpNetwork>> {
     let mut ifaces: HashMap<String, HashSet<IpNetwork>> = HashMap::new();
     let mut addrs: MaybeUninit<*mut libc::ifaddrs> = MaybeUninit::uninit();

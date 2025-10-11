@@ -2243,6 +2243,7 @@ cfg_if! {
             target_os = "android",
             target_os = "macos",
             target_os = "ios",
+            target_os = "redox",
         )
     ))] {
         use libc::pid_t;

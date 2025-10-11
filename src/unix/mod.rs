@@ -23,6 +23,12 @@ cfg_if! {
 
         #[allow(unused_imports)]
         pub(crate) use libc::__error as libc_errno;
+    } else if #[cfg(target_os = "redox")] {
+        pub(crate) mod redox;
+        pub(crate) use redox as sys;
+
+        #[allow(unused_imports)]
+        pub(crate) use libc::__errno_location as libc_errno;
     } else {
         compile_error!("Invalid cfg!");
     }

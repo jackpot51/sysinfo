@@ -3,7 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Instant;
 
@@ -59,44 +59,23 @@ impl CpusWrapper {
         // we don't want to update CPUs times.
         if need_cpu_usage_update {
             self.last_update = Some(Instant::now());
-            let f = match File::open("/proc/stat") {
-                Ok(f) => f,
-                Err(_e) => {
-                    sysinfo_debug!("failed to retrieve CPU information: {:?}", _e);
-                    return;
-                }
-            };
-            let buf = BufReader::new(f);
-
-            let mut i: usize = 0;
-            let mut it = buf.split(b'\n');
-
+            //TODO: per cpu usage stats
             if first || refresh_kind.cpu_usage() {
-                if let Some(Ok(line)) = it.next() {
-                    if line.len() < 4 || &line[..4] != b"cpu " {
-                        return;
-                    }
-                    let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty()).skip(1);
-                    self.global_cpu.set(
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                        parts.next().map(to_u64).unwrap_or(0),
-                    );
-                }
+                self.global_cpu.set(
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
                 if first || !only_update_global_cpu {
-                    while let Some(Ok(line)) = it.next() {
-                        if line.len() < 3 || &line[..3] != b"cpu" {
-                            break;
-                        }
-
-                        let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty());
+                    let mut i = 0;
+                    while !vendors_brands.is_empty() {
                         if first {
                             let (vendor_id, brand) = match vendors_brands.remove(&i) {
                                 Some((vendor_id, brand)) => (vendor_id, brand),
@@ -104,36 +83,35 @@ impl CpusWrapper {
                             };
                             self.cpus.push(Cpu {
                                 inner: CpuInner::new_with_values(
-                                    to_str!(parts.next().unwrap_or(&[])),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
+                                    &format!("cpu{}", i),
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
                                     0,
                                     vendor_id,
                                     brand,
                                 ),
                             });
                         } else {
-                            parts.next(); // we don't want the name again
                             if let Some(cpu) = self.cpus.get_mut(i) {
                                 cpu.inner.set(
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
-                                    parts.next().map(to_u64).unwrap_or(0),
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
                                 );
                             } else {
                                 // A new CPU was added, so let's ignore it. If they want it into
@@ -144,41 +122,15 @@ impl CpusWrapper {
 
                         i += 1;
                     }
-                }
-                if i < self.cpus.len() {
-                    sysinfo_debug!("{} CPU(s) seem to have been removed", self.cpus.len() - i);
+                    if i < self.cpus.len() {
+                        sysinfo_debug!("{} CPU(s) seem to have been removed", self.cpus.len() - i);
+                    }
                 }
             }
         }
 
         if refresh_kind.frequency() {
-            #[cfg(feature = "multithread")]
-            use rayon::iter::{
-                IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-            };
-
-            #[cfg(feature = "multithread")]
-            // This function is voluntarily made generic in case we want to generalize it.
-            fn iter_mut<'a, T>(
-                val: &'a mut T,
-            ) -> <&'a mut T as rayon::iter::IntoParallelIterator>::Iter
-            where
-                &'a mut T: rayon::iter::IntoParallelIterator,
-            {
-                val.par_iter_mut()
-            }
-
-            #[cfg(not(feature = "multithread"))]
-            fn iter_mut(val: &mut [Cpu]) -> std::slice::IterMut<'_, Cpu> {
-                val.iter_mut()
-            }
-
-            // `get_cpu_frequency` is very slow, so better run it in parallel.
-            iter_mut(&mut self.cpus)
-                .enumerate()
-                .for_each(|(pos, proc_)| proc_.inner.frequency = get_cpu_frequency(pos));
-
-            self.got_cpu_frequency = true;
+            //TODO: cpu frequency
         }
     }
 
@@ -438,99 +390,6 @@ impl CpuInner {
     }
 }
 
-pub(crate) fn get_cpu_frequency(cpu_core_index: usize) -> u64 {
-    let mut s = String::new();
-    if File::open(format!(
-        "/sys/devices/system/cpu/cpu{cpu_core_index}/cpufreq/scaling_cur_freq",
-    ))
-    .and_then(|mut f| f.read_to_string(&mut s))
-    .is_ok()
-    {
-        let freq_option = s.trim().split('\n').next();
-        if let Some(freq_string) = freq_option
-            && let Ok(freq) = freq_string.parse::<u64>()
-        {
-            return freq / 1000;
-        }
-    }
-    s.clear();
-    if File::open("/proc/cpuinfo")
-        .and_then(|mut f| f.read_to_string(&mut s))
-        .is_err()
-    {
-        return 0;
-    }
-    let find_cpu_mhz = s.split('\n').find(|line| {
-        cpuinfo_is_key(line, b"cpu MHz\t")
-            || cpuinfo_is_key(line, b"CPU MHz\t")
-            || cpuinfo_is_key(line, b"BogoMIPS")
-            || cpuinfo_is_key(line, b"clock\t")
-            || cpuinfo_is_key(line, b"bogomips per cpu")
-    });
-    find_cpu_mhz
-        .and_then(|line| line.split(':').next_back())
-        .and_then(|val| val.replace("MHz", "").trim().parse::<f64>().ok())
-        .map(|speed| speed as u64)
-        .unwrap_or_default()
-}
-
-#[allow(unused_assignments)]
-pub(crate) fn get_physical_core_count() -> Option<usize> {
-    let mut s = String::new();
-    if let Err(_e) = File::open("/proc/cpuinfo").and_then(|mut f| f.read_to_string(&mut s)) {
-        sysinfo_debug!("Cannot read `/proc/cpuinfo` file: {:?}", _e);
-        return None;
-    }
-
-    macro_rules! add_core {
-        ($core_ids_and_physical_ids:ident, $core_id:ident, $physical_id:ident, $cpu:ident) => {{
-            if !$core_id.is_empty() && !$physical_id.is_empty() {
-                $core_ids_and_physical_ids.insert(format!("{} {}", $core_id, $physical_id));
-            } else if !$cpu.is_empty() {
-                // On systems with only physical cores like raspberry, there is no "core id" or
-                // "physical id" fields. So if one of them is missing, we simply use the "CPU"
-                // info and count it as a physical core.
-                $core_ids_and_physical_ids.insert($cpu.to_owned());
-            }
-            $core_id = "";
-            $physical_id = "";
-            $cpu = "";
-        }};
-    }
-
-    let mut core_ids_and_physical_ids: HashSet<String> = HashSet::new();
-    let mut core_id = "";
-    let mut physical_id = "";
-    let mut cpu = "";
-
-    for line in s.lines() {
-        if line.is_empty() {
-            add_core!(core_ids_and_physical_ids, core_id, physical_id, cpu);
-        } else if line.starts_with("processor") {
-            cpu = line
-                .splitn(2, ':')
-                .last()
-                .map(|x| x.trim())
-                .unwrap_or_default();
-        } else if line.starts_with("core id") {
-            core_id = line
-                .splitn(2, ':')
-                .last()
-                .map(|x| x.trim())
-                .unwrap_or_default();
-        } else if line.starts_with("physical id") {
-            physical_id = line
-                .splitn(2, ':')
-                .last()
-                .map(|x| x.trim())
-                .unwrap_or_default();
-        }
-    }
-    add_core!(core_ids_and_physical_ids, core_id, physical_id, cpu);
-
-    Some(core_ids_and_physical_ids.len())
-}
-
 /// Obtain the implementer of this CPU core.
 ///
 /// This has been obtained from util-linux's lscpu implementation, see
@@ -755,187 +614,34 @@ fn get_arm_part(implementer: u32, part: u32) -> Option<&'static str> {
 
 /// Returns the brand/vendor string for the first CPU (which should be the same for all CPUs).
 pub(crate) fn get_vendor_id_and_brand() -> HashMap<usize, (String, String)> {
+    let mut cpus = HashMap::new();
     let mut s = String::new();
-    if File::open("/proc/cpuinfo")
-        .and_then(|mut f| f.read_to_string(&mut s))
-        .is_err()
-    {
-        return HashMap::new();
-    }
-    get_vendor_id_and_brand_inner(&s)
-}
-
-#[inline]
-fn cpuinfo_is_key(line: &str, key: &[u8]) -> bool {
-    let line = line.as_bytes();
-    line.len() > key.len() && line[..key.len()].eq_ignore_ascii_case(key)
-}
-
-fn get_vendor_id_and_brand_inner(data: &str) -> HashMap<usize, (String, String)> {
-    fn get_value(s: &str) -> String {
-        s.split(':')
-            .next_back()
-            .map(|x| x.trim().to_owned())
-            .unwrap_or_default()
-    }
-
-    fn get_hex_value(s: &str) -> u32 {
-        s.split(':')
-            .next_back()
-            .map(|x| x.trim())
-            .filter(|x| x.starts_with("0x"))
-            .map(|x| u32::from_str_radix(&x[2..], 16).unwrap())
-            .unwrap_or_default()
-    }
-
-    #[inline]
-    fn is_new_processor(line: &str) -> bool {
-        line.starts_with("processor\t")
-    }
-
-    #[derive(Default)]
-    struct CpuInfo {
-        index: usize,
-        vendor_id: Option<String>,
-        brand: Option<String>,
-        implementer: Option<u32>,
-        part: Option<u32>,
-    }
-
-    impl CpuInfo {
-        fn has_all_info(&self) -> bool {
-            (self.brand.is_some() && self.vendor_id.is_some())
-                || (self.implementer.is_some() && self.part.is_some())
-        }
-
-        fn convert(mut self) -> (usize, String, String) {
-            let (vendor_id, brand) = if let (Some(implementer), Some(part)) =
-                (self.implementer.take(), self.part.take())
-            {
-                let vendor_id = get_arm_implementer(implementer).map(String::from);
-                // It's possible to "model name" even with an ARM CPU, so just in case we can't retrieve
-                // the brand from "CPU part", we will then use the value from "model name".
-                //
-                // Example from raspberry pi 3B+:
-                //
-                // ```
-                // model name      : ARMv7 Processor rev 4 (v7l)
-                // CPU implementer : 0x41
-                // CPU part        : 0xd03
-                // ```
-                let brand = get_arm_part(implementer, part)
-                    .map(String::from)
-                    .or_else(|| self.brand.take());
-                (vendor_id, brand)
-            } else {
-                (self.vendor_id.take(), self.brand.take())
-            };
-            (
-                self.index,
-                vendor_id.unwrap_or_default(),
-                brand.unwrap_or_default(),
-            )
-        }
-    }
-
-    let mut cpus: HashMap<usize, (String, String)> = HashMap::new();
-    let mut lines = data.split('\n').peekable();
-    while let Some(line) = lines.next() {
-        if is_new_processor(line) {
-            let index = match line
-                .split(':')
-                .nth(1)
-                .and_then(|i| i.trim().parse::<usize>().ok())
-            {
-                Some(index) => index,
-                None => {
-                    sysinfo_debug!("Couldn't get processor ID from {line:?}, ignoring this core");
-                    continue;
-                }
-            };
-
-            let mut info = CpuInfo {
-                index,
-                ..Default::default()
-            };
-
-            #[allow(clippy::while_let_on_iterator)]
-            while let Some(line) = lines.peek() {
-                if cpuinfo_is_key(line, b"vendor_id\t") {
-                    info.vendor_id = Some(get_value(line));
-                } else if cpuinfo_is_key(line, b"model name\t") {
-                    info.brand = Some(get_value(line));
-                } else if cpuinfo_is_key(line, b"CPU implementer\t") {
-                    info.implementer = Some(get_hex_value(line));
-                } else if cpuinfo_is_key(line, b"CPU part\t") {
-                    info.part = Some(get_hex_value(line));
-                } else if info.has_all_info() || is_new_processor(line) {
-                    break;
-                }
-                lines.next();
+    //TODO: allow reading information per CPU
+    let Ok(s) = fs::read_to_string("/scheme/sys/cpu") else {
+        return cpus;
+    };
+    let mut count = 1;
+    let mut vendor = String::new();
+    let mut model = String::new();
+    for line in s.lines() {
+        let mut parts = line.splitn(2, ": ");
+        let Some(key) = parts.next() else { continue };
+        let Some(value) = parts.next() else { continue };
+        match key {
+            "CPUs" => {
+                value.parse::<usize>().map(|x| count = x);
+            },
+            "Vendor" => {
+                vendor = value.to_string();
+            },
+            "Model" => {
+                model = value.to_string();
             }
-            let (index, vendor_id, brand) = info.convert();
-            cpus.insert(index, (vendor_id, brand));
+            _ => {}
         }
+    }
+    for id in 0..count {
+        cpus.insert(id, (vendor.clone(), model.clone()));
     }
     cpus
-}
-
-#[cfg(test)]
-mod test {
-    use super::get_vendor_id_and_brand_inner;
-
-    // The iterator was skipping the `is_new_processor` check because we already moved past
-    // the line where `processor]\t` is located.
-    //
-    // Regression test for <https://github.com/GuillaumeGomez/sysinfo/issues/1527>.
-    #[test]
-    fn test_cpu_retrieval() {
-        const DATA: &str = r#"
-processor		: 1
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 1
-
-processor		: 2
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-package			: 0
-core			: 2
-
-processor		: 3
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 3
-
-processor		: 4
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 0
-
-processor		: 5
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 1
-
-processor		: 6
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 2
-
-processor		: 7
-cpu model		: Loongson-3 V0.4  FPU V0.1
-model name		: Loongson-3A R4 (Loongson-3B4000) @ 1800MHz
-CPU MHz			: 1800.00
-core			: 3"#;
-
-        let cpus = get_vendor_id_and_brand_inner(DATA);
-        assert_eq!(cpus.len(), 7);
-    }
 }

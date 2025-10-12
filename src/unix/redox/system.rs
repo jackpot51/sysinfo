@@ -1,6 +1,6 @@
 // Take a look at the license at the top of the repository in the LICENSE file.
 
-use crate::sys::cpu::{CpusWrapper, get_physical_core_count};
+use crate::sys::cpu::CpusWrapper;
 use crate::sys::process::{compute_cpu_usage, refresh_procs};
 use crate::sys::utils::{get_all_utf8_data, to_u64};
 use crate::{
@@ -12,7 +12,7 @@ use libc::{self, _SC_CLK_TCK, _SC_HOST_NAME_MAX, _SC_PAGESIZE, c_char, sysconf};
 
 use std::cmp::min;
 use std::collections::HashMap;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::Read;
 use std::mem::MaybeUninit;
@@ -226,38 +226,15 @@ impl SystemInner {
         if !refresh_kind.ram() && !refresh_kind.swap() {
             return;
         }
-        let mut mem_available_found = false;
-        read_table("/proc/meminfo", ':', |key, value_kib| {
-            let field = match key {
-                "MemTotal" => &mut self.mem_total,
-                "MemFree" => &mut self.mem_free,
-                "MemAvailable" => {
-                    mem_available_found = true;
-                    &mut self.mem_available
-                }
-                "Buffers" => &mut self.mem_buffers,
-                "Cached" => &mut self.mem_page_cache,
-                "Shmem" => &mut self.mem_shmem,
-                "SReclaimable" => &mut self.mem_slab_reclaimable,
-                "SwapTotal" => &mut self.swap_total,
-                "SwapFree" => &mut self.swap_free,
-                _ => return,
-            };
-            // /proc/meminfo reports KiB, though it says "kB". Convert it.
-            *field = value_kib.saturating_mul(1_024);
-        });
-
-        // Linux < 3.14 may not have MemAvailable in /proc/meminfo
-        // So it should fallback to the old way of estimating available memory
-        // https://github.com/KittyKatt/screenFetch/issues/386#issuecomment-249312716
-        if !mem_available_found {
-            self.mem_available = self
-                .mem_free
-                .saturating_add(self.mem_buffers)
-                .saturating_add(self.mem_page_cache)
-                .saturating_add(self.mem_slab_reclaimable)
-                .saturating_sub(self.mem_shmem);
+        let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+        if unsafe { libc::statvfs(CString::new("/scheme/memory").unwrap().as_ptr(), stat.as_mut_ptr()) } == 0 {
+            let stat = unsafe { stat.assume_init() };
+            self.mem_total = stat.f_blocks as u64 * stat.f_bsize as u64;
+            self.mem_free = stat.f_bfree as u64 * stat.f_bsize as u64;
+            self.mem_available = stat.f_bavail as u64 * stat.f_bsize as u64;
+            //TODO: other memory numbers
         }
+
     }
 
     pub(crate) fn cgroup_limits(&self) -> Option<crate::CGroupLimits> {
@@ -546,7 +523,7 @@ impl SystemInner {
     }
 
     pub(crate) fn physical_core_count() -> Option<usize> {
-        get_physical_core_count()
+        Some(unsafe { sysconf(libc::_SC_NPROCESSORS_ONLN) as _ })
     }
 
     pub(crate) fn refresh_cpu_list(&mut self, refresh_kind: CpuRefreshKind) {

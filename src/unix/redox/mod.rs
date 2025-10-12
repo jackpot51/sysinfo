@@ -1,5 +1,7 @@
 // Take a look at the license at the top of the repository in the LICENSE file.
 
+//TODO: replace usages of /proc and /sys with correct paths
+
 pub(crate) mod utils;
 
 cfg_if! {

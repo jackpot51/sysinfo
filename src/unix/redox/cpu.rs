@@ -57,74 +57,92 @@ impl CpusWrapper {
 
         // If the last CPU usage update is too close (less than `MINIMUM_CPU_UPDATE_INTERVAL`),
         // we don't want to update CPUs times.
-        if need_cpu_usage_update {
-            self.last_update = Some(Instant::now());
-            //TODO: per cpu usage stats
-            if first || refresh_kind.cpu_usage() {
-                self.global_cpu.set(
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                );
-                if first || !only_update_global_cpu {
-                    let mut i = 0;
-                    while !vendors_brands.is_empty() {
-                        if first {
-                            let (vendor_id, brand) = match vendors_brands.remove(&i) {
-                                Some((vendor_id, brand)) => (vendor_id, brand),
-                                None => (String::new(), String::new()),
-                            };
-                            self.cpus.push(Cpu {
-                                inner: CpuInner::new_with_values(
-                                    &format!("cpu{}", i),
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    vendor_id,
-                                    brand,
-                                ),
-                            });
-                        } else {
-                            if let Some(cpu) = self.cpus.get_mut(i) {
-                                cpu.inner.set(
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                );
-                            } else {
-                                // A new CPU was added, so let's ignore it. If they want it into
-                                // the list, they need to use `refresh_cpu_list`.
-                                sysinfo_debug!("ignoring new CPU added");
-                            }
-                        }
+        if need_cpu_usage_update && (first || refresh_kind.cpu_usage()) {
+/* Example /scheme/sys/stat output:
+cpu  3655 0 10896 965406 37003
+cpu0 344 0 626 29683 37003
+cpu1 319 0 1632 28676 0
+cpu2 227 0 1478 28920 0
+cpu3 169 0 1125 29333 0
+cpu4 139 0 740 29753 0
+name user nice kernel idle irq
+Description of fields above
+*/
 
-                        i += 1;
-                    }
-                    if i < self.cpus.len() {
-                        sysinfo_debug!("{} CPU(s) seem to have been removed", self.cpus.len() - i);
-                    }
+            let mut sys_stat = fs::read_to_string("/scheme/sys/stat").unwrap_or_default();
+            self.last_update = Some(Instant::now());
+            for line in sys_stat.lines() {
+                let mut parts = line.split(' ').filter(|s| !s.is_empty());
+                let name = parts.next().unwrap_or_default();
+                if !name.starts_with("cpu") {
+                    continue;
+                }
+                let user = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+                let nice = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+                let system = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+                let idle = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+                let iowait = 0;
+                let irq = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+                let softirq = 0;
+                let steal = 0;
+                let guest = 0;
+                let guest_nice = 0;
+
+                // Global stats
+                if name == "cpu" {
+                    self.global_cpu.set(
+                        user,
+                        nice,
+                        system,
+                        idle,
+                        iowait,
+                        irq,
+                        softirq,
+                        steal,
+                        guest,
+                        guest_nice,
+                    );
+                    continue;
+                }
+
+                // Per-cpu stats
+                let Ok(i) = name[3..].parse::<usize>() else { continue };
+                if first {
+                    let (vendor_id, brand) = match vendors_brands.remove(&i) {
+                        Some((vendor_id, brand)) => (vendor_id, brand),
+                        None => (String::new(), String::new()),
+                    };
+                    self.cpus.push(Cpu {
+                        inner: CpuInner::new_with_values(
+                            name,
+                            user,
+                            nice,
+                            system,
+                            idle,
+                            iowait,
+                            irq,
+                            softirq,
+                            steal,
+                            guest,
+                            guest_nice,
+                            0,
+                            vendor_id,
+                            brand,
+                        ),
+                    });
+                } else if let Some(cpu) = self.cpus.get_mut(i) {
+                    cpu.inner.set(
+                        user,
+                        nice,
+                        system,
+                        idle,
+                        iowait,
+                        irq,
+                        softirq,
+                        steal,
+                        guest,
+                        guest_nice,
+                    );
                 }
             }
         }

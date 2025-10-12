@@ -253,7 +253,7 @@ impl SystemInner {
         let uptime = Self::uptime();
         let nb_updated = refresh_procs(
             &mut self.process_list,
-            Path::new("/scheme/sys/context"),
+            Path::new("/proc"),
             uptime,
             &self.info,
             processes_to_update,

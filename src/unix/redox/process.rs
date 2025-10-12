@@ -361,13 +361,6 @@ pub(crate) fn compute_cpu_usage(p: &mut ProcessInner, total_time: f32, max_value
         .min(max_value);
 }
 
-pub(crate) fn set_time(p: &mut ProcessInner, utime: u64, stime: u64) {
-    p.old_utime = p.utime;
-    p.old_stime = p.stime;
-    p.utime = utime;
-    p.stime = stime;
-}
-
 #[inline(always)]
 fn start_time_raw(parts: &Parts<'_>) -> u64 {
     u64::from_str(parts.str_parts[ProcIndex::StartTime as usize]).unwrap_or(0)
@@ -404,11 +397,84 @@ pub(crate) fn refresh_procs(
     processes_to_update: ProcessesToUpdate<'_>,
     refresh_kind: ProcessRefreshKind,
 ) -> usize {
- /* Example data from /scheme/proc/ps:
+    let mut nb_updated = 0;
+    //TODO: these could be out of sync
+    let proc_ps = fs::read_to_string("/scheme/proc/ps").unwrap_or_default();
+    let sys_context = fs::read_to_string("/scheme/sys/context").unwrap_or_default();
+
+    // Reset current processes
+    for (pid, proc) in proc_list.iter_mut() {
+        let mut p = &mut proc.inner;
+        p.name.clear();
+        p.parent = None;
+        p.memory = 0;
+        p.virtual_memory = 0;
+        p.old_utime = p.utime;
+        p.old_stime = p.stime;
+        p.utime = 0;
+        p.stime = 0;
+        p.updated = false;
+        p.user_id = None;
+        p.effective_user_id = None;
+        p.group_id = None;
+        p.effective_group_id = None;
+        p.status = ProcessStatus::Unknown(0);
+        p.thread_kind = None;
+        p.exists = false;
+    }
+
+/* Example data from /scheme/proc/ps:
 PID   PGID  PPID  SID   RUID  RGID  RNS   EUID  EGID  ENS   NTHRD STATUS  NAME
 1     1     1     1     0     0     1     0     0     1     1     R       /scheme/initfs/bin/init
 4     1     1     1     0     0     0     0     0     0     1     R       /bin/nulld
+0     6     12    18    24    30    36    42    48    54    60    66      74
+Indexes listed above
 */
+    for line in proc_ps.lines().skip(1) {
+        let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else { continue };
+        let ppid = line[12..18].trim().parse::<Pid>().ok();
+        let ruid = line[24..30].trim().parse::<libc::uid_t>().map(Uid).ok();
+        let rgid = line[30..36].trim().parse::<libc::gid_t>().map(Gid).ok();
+        let euid = line[42..48].trim().parse::<libc::uid_t>().map(Uid).ok();
+        let egid = line[48..54].trim().parse::<libc::gid_t>().map(Gid).ok();
+        let status = line[66..74].trim().chars().next().unwrap_or_default();
+        let name = &line[74..];
+
+        //TODO: use TID or fill in tasks?
+        //TODO: /proc not implemented so this path is not useful
+        //TODO: fill in more fields
+        let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
+            inner: ProcessInner::new(pid, proc_path.join(format!("{}", pid)))
+        });
+        let mut p = &mut proc.inner;
+        if p.name.is_empty() {
+            p.name = name.into();
+        }
+        if p.parent.is_none() {
+            p.parent = ppid;
+        }
+        if p.user_id.is_none() {
+            p.user_id = ruid;
+        }
+        if p.effective_user_id.is_none() {
+            p.effective_user_id = euid;
+        }
+        if p.group_id.is_none() {
+            p.group_id = rgid;
+        }
+        if p.effective_group_id.is_none() {
+            p.effective_group_id = egid;
+        }
+        if p.status == ProcessStatus::Unknown(0) {
+            p.status = ProcessStatus::from(status);
+        }
+        p.exists = true;
+
+        if !p.updated {
+            p.updated = true;
+            nb_updated += 1;
+        }
+    }
 
 /* Example data from /scheme/sys/context:
 PID   EUID  EGID  ENS   STAT  CPU   AFFINITY   TIME        MEM     NAME
@@ -422,26 +488,15 @@ PID   EUID  EGID  ENS   STAT  CPU   AFFINITY   TIME        MEM     NAME
 0     6     12    18    24    30    36         47 50 53 56 59      67
 Indexes listed above
 */
-    let mut nb_updated = 0;
-    for line in fs::read_to_string(proc_path).unwrap_or_default().lines().skip(1) {
+    for line in sys_context.lines().skip(1) {
         let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else { continue };
-
-        match processes_to_update {
-            ProcessesToUpdate::All => {},
-            ProcessesToUpdate::Some(pids) => if !pids.contains(&pid) {
-                continue;
-            }
-        }
-
-        let euid = Uid(line[6..12].trim().parse::<libc::uid_t>().unwrap_or_default());
-        let egid = Gid(line[12..18].trim().parse::<libc::gid_t>().unwrap_or_default());
-        //TODO: use ens?
+        let euid = line[6..12].trim().parse::<libc::uid_t>().map(Uid).ok();
+        let egid = line[12..18].trim().parse::<libc::gid_t>().map(Gid).ok();
         let mut stat = line[24..30].trim().chars();
         let kind = stat.next().unwrap_or_default();
         let status = stat.next().unwrap_or_default();
         //TODO: this ID may not map to the CPUs detected from /scheme/sys/cpu
         let cpu = line[31..36].trim().parse::<usize>().unwrap_or_default();
-        //TODO: use affinity?
         let time =
             // Hours
             line[47..49].parse::<u64>().unwrap_or_default() * 3600 * 1000 + 
@@ -468,28 +523,41 @@ Indexes listed above
         //TODO: /proc not implemented so this path is not useful
         //TODO: fill in more fields
         let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
-            inner: ProcessInner::new(pid, Path::new("/proc").join(format!("{}", pid)))
+            inner: ProcessInner::new(pid, proc_path.join(format!("{}", pid)))
         });
         let mut p = &mut proc.inner;
-        p.name = name.into();
-        p.memory = mem;
-        p.virtual_memory = mem;
-        //TODO: get real uid from /scheme/proc/ps
-        p.user_id = Some(euid.clone());
-        p.effective_user_id = Some(euid);
-        //TODO: get real gid from /scheme/proc/ps
-        p.group_id = Some(egid.clone());
-        p.effective_group_id = Some(egid);
-        p.status = ProcessStatus::from(status);
-        p.thread_kind = Some(match kind {
-            'U' => ThreadKind::Userland,
-            _ => ThreadKind::Kernel,
-        });
-        //TODO: system time
-        set_time(p, time, 0);
+        if p.name.is_empty() {
+            p.name = name.into();
+        }
+        p.memory += mem;
+        p.virtual_memory += mem;
+        if p.effective_user_id.is_none() {
+            p.effective_user_id = euid;
+        }
+        if p.effective_group_id.is_none() {
+            p.effective_group_id = egid;
+        }
+        if p.status == ProcessStatus::Unknown(0) {
+            p.status = ProcessStatus::from(status);
+        }
+        if p.thread_kind.is_none() {
+            p.thread_kind = Some(match kind {
+                'U' => ThreadKind::Userland,
+                _ => ThreadKind::Kernel,
+            });
+        }
+        p.utime += time;
+        p.exists = true;
 
-        nb_updated += 1;
+        if !p.updated {
+            p.updated = true;
+            nb_updated += 1;
+        }
     }
+
+    // Remove non-existant processes
+    proc_list.retain(|_pid, proc| proc.inner.exists);
+
     nb_updated
 }
 

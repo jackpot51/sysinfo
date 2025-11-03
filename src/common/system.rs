@@ -2713,6 +2713,7 @@ pub fn get_current_pid() -> Result<Pid, &'static str> {
             target_os = "android",
             target_os = "macos",
             target_os = "ios",
+            target_os = "redox",
         ))] {
             fn inner() -> Result<Pid, &'static str> {
                 unsafe { Ok(Pid(libc::getpid())) }

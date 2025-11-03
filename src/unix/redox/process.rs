@@ -126,13 +126,12 @@ pub(crate) struct ProcessInner {
     read_bytes: u64,
     written_bytes: u64,
     thread_kind: Option<ThreadKind>,
-    proc_path: PathBuf,
     accumulated_cpu_time: u64,
     exists: bool,
 }
 
 impl ProcessInner {
-    pub(crate) fn new(pid: Pid, proc_path: PathBuf) -> Self {
+    pub(crate) fn new(pid: Pid) -> Self {
         Self {
             name: OsString::new(),
             pid,
@@ -166,7 +165,6 @@ impl ProcessInner {
             read_bytes: 0,
             written_bytes: 0,
             thread_kind: None,
-            proc_path,
             accumulated_cpu_time: 0,
             exists: true,
         }
@@ -263,15 +261,6 @@ impl ProcessInner {
     }
 
     pub(crate) fn wait(&self) -> Option<ExitStatus> {
-        // If anything fails when trying to retrieve the start time, better to return `None`.
-        let (data, _) = _get_stat_data_and_file(&self.proc_path).ok()?;
-        let parts = parse_stat_file(&data)?;
-
-        if start_time_raw(&parts) != self.start_time_raw {
-            sysinfo_debug!("Seems to not be the same process anymore");
-            return None;
-        }
-
         crate::unix::utils::wait_process(self.pid)
     }
 
@@ -307,40 +296,11 @@ impl ProcessInner {
     }
 
     pub(crate) fn open_files(&self) -> Option<usize> {
-        let open_files_dir = self.proc_path.as_path().join("fd");
-        match fs::read_dir(&open_files_dir) {
-            Ok(entries) => Some(entries.count() as _),
-            Err(_error) => {
-                sysinfo_debug!(
-                    "Failed to get open files in `{}`: {_error:?}",
-                    open_files_dir.display(),
-                );
-                None
-            }
-        }
+        None
     }
 
     pub(crate) fn open_files_limit(&self) -> Option<usize> {
-        let limits_files = self.proc_path.as_path().join("limits");
-        match fs::read_to_string(&limits_files) {
-            Ok(content) => {
-                for line in content.lines() {
-                    if let Some(line) = line.strip_prefix("Max open files ")
-                        && let Some(nb) = line.split_whitespace().find(|p| !p.is_empty())
-                    {
-                        return usize::from_str(nb).ok();
-                    }
-                }
-                None
-            }
-            Err(_error) => {
-                sysinfo_debug!(
-                    "Failed to get limits in `{}`: {_error:?}",
-                    limits_files.display()
-                );
-                None
-            }
-        }
+        None
     }
 }
 
@@ -391,7 +351,6 @@ fn get_status(p: &mut ProcessInner, part: &str) {
 /// place, we need to get the task parent (if it's a task).
 pub(crate) fn refresh_procs(
     proc_list: &mut HashMap<Pid, Process>,
-    proc_path: &Path,
     uptime: u64,
     info: &SystemInfo,
     processes_to_update: ProcessesToUpdate<'_>,
@@ -420,6 +379,7 @@ pub(crate) fn refresh_procs(
         p.effective_group_id = None;
         p.status = ProcessStatus::Unknown(0);
         p.thread_kind = None;
+        p.accumulated_cpu_time = 0;
         p.exists = false;
     }
 
@@ -444,7 +404,7 @@ Indexes listed above
         //TODO: /proc not implemented so this path is not useful
         //TODO: fill in more fields
         let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
-            inner: ProcessInner::new(pid, proc_path.join(format!("{}", pid)))
+            inner: ProcessInner::new(pid)
         });
         let mut p = &mut proc.inner;
         if p.name.is_empty() {
@@ -523,7 +483,7 @@ Indexes listed above
         //TODO: /proc not implemented so this path is not useful
         //TODO: fill in more fields
         let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
-            inner: ProcessInner::new(pid, proc_path.join(format!("{}", pid)))
+            inner: ProcessInner::new(pid)
         });
         let mut p = &mut proc.inner;
         if p.name.is_empty() {
@@ -547,6 +507,7 @@ Indexes listed above
             });
         }
         p.utime += time;
+        p.accumulated_cpu_time += time;
         p.exists = true;
 
         if !p.updated {

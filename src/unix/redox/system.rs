@@ -34,21 +34,6 @@ unsafe fn getrlimit() -> Option<libc::rlimit> {
     }
 }
 
-pub(crate) fn get_max_nb_fds() -> usize {
-    unsafe {
-        let mut limits = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) != 0 {
-            // Most Linux system now defaults to 1024.
-            1024 / 2
-        } else {
-            limits.rlim_max as usize / 2
-        }
-    }
-}
-
 // This whole thing is to prevent having too many files open at once. It could be problematic
 // for processes using a lot of files and using sysinfo at the same time.
 pub(crate) fn remaining_files() -> &'static AtomicIsize {
@@ -253,7 +238,6 @@ impl SystemInner {
         let uptime = Self::uptime();
         let nb_updated = refresh_procs(
             &mut self.process_list,
-            Path::new("/proc"),
             uptime,
             &self.info,
             processes_to_update,
@@ -554,25 +538,6 @@ fn read_u64(filename: &str) -> Option<u64> {
     }
 
     result
-}
-
-fn read_table<F>(filename: &str, colsep: char, mut f: F)
-where
-    F: FnMut(&str, u64),
-{
-    if let Ok(content) = get_all_utf8_data(filename, 16_635) {
-        content
-            .split('\n')
-            .flat_map(|line| {
-                let mut split = line.split(colsep);
-                let key = split.next()?;
-                let value = split.next()?;
-                let value0 = value.trim_start().split(' ').next()?;
-                let value0_u64 = u64::from_str(value0).ok()?;
-                Some((key, value0_u64))
-            })
-            .for_each(|(k, v)| f(k, v));
-    }
 }
 
 fn read_table_key(filename: &str, target_key: &str, colsep: char) -> Option<u64> {

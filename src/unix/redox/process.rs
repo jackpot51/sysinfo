@@ -383,15 +383,17 @@ pub(crate) fn refresh_procs(
         p.exists = false;
     }
 
-/* Example data from /scheme/proc/ps:
-PID   PGID  PPID  SID   RUID  RGID  RNS   EUID  EGID  ENS   NTHRD STATUS  NAME
-1     1     1     1     0     0     1     0     0     1     1     R       /scheme/initfs/bin/init
-4     1     1     1     0     0     0     0     0     0     1     R       /bin/nulld
-0     6     12    18    24    30    36    42    48    54    60    66      74
-Indexes listed above
-*/
+    /* Example data from /scheme/proc/ps:
+    PID   PGID  PPID  SID   RUID  RGID  RNS   EUID  EGID  ENS   NTHRD STATUS  NAME
+    1     1     1     1     0     0     1     0     0     1     1     R       /scheme/initfs/bin/init
+    4     1     1     1     0     0     0     0     0     0     1     R       /bin/nulld
+    0     6     12    18    24    30    36    42    48    54    60    66      74
+    Indexes listed above
+    */
     for line in proc_ps.lines().skip(1) {
-        let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else { continue };
+        let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else {
+            continue;
+        };
         let ppid = line[12..18].trim().parse::<Pid>().ok();
         let ruid = line[24..30].trim().parse::<libc::uid_t>().map(Uid).ok();
         let rgid = line[30..36].trim().parse::<libc::gid_t>().map(Gid).ok();
@@ -404,7 +406,7 @@ Indexes listed above
         //TODO: /proc not implemented so this path is not useful
         //TODO: fill in more fields
         let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
-            inner: ProcessInner::new(pid)
+            inner: ProcessInner::new(pid),
         });
         let mut p = &mut proc.inner;
         if p.name.is_empty() {
@@ -436,54 +438,62 @@ Indexes listed above
         }
     }
 
-/* Example data from /scheme/sys/context:
-PID   EUID  EGID  ENS   STAT  CPU   AFFINITY   TIME        MEM     NAME
-0     0     0     0     RR+   #3               00:00:01.36 1 KB    [kmain]
-0     0     0     0     RR+   #2               00:00:01.35 1 KB    [kmain]
-0     0     0     0     RR    #1               00:00:01.34 1 KB    [kmain]
-0     0     0     0     RR+   #0               00:00:01.31 1 KB    [kmain]
-0     0     0     1     UB    #3               00:00:00.00 23 MB   [init]
-0     0     0     1     UB    #1               00:00:00.00 23 MB   [init]
-1     0     0     1     UB    #3               00:00:00.01 1 MB    /scheme/initfs/bin/init
-0     6     12    18    24    30    36         47 50 53 56 59      67
-Indexes listed above
-*/
+    /* Example data from /scheme/sys/context:
+    PID   EUID  EGID  STAT  CPU   AFFINITY   TIME        PRIVATE SHARED  NAME
+    0     0     0     RR    #0    1          00:00:00.00 1.12 KB 0 B     [kmain]
+    0     0     0     RR+   #2    4          00:00:00.00 1.12 KB 0 B     [kmain]
+    0     0     0     RR+   #1    2          00:00:00.00 1.12 KB 0 B     [kmain]
+    0     0     0     RR+   #3    8          00:00:00.00 1.12 KB 0 B     [kmain]
+    0     0     0     UB    #0    F          00:00:00.00 22.8 MB 8.00 KB [init]
+    0     0     0     UB    #0    F          00:00:00.17 1.37 MB 304 KB  [init]
+    0     0     0     UB    #0    F          00:00:00.02 1.37 MB 0 B     [init]
+    1     0     0     UB    #3    F          00:00:00.01 1.96 MB 0 B     /scheme/initfs/bin/init
+    0     6     12    18    24    30         41 44 47 50 53      61      69
+    Indexes listed above
+    */
     for line in sys_context.lines().skip(1) {
-        let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else { continue };
+        let Ok(pid) = line[0..6].trim().parse::<usize>().map(Pid::from) else {
+            continue;
+        };
         let euid = line[6..12].trim().parse::<libc::uid_t>().map(Uid).ok();
         let egid = line[12..18].trim().parse::<libc::gid_t>().map(Gid).ok();
-        let mut stat = line[24..30].trim().chars();
+        let mut stat = line[18..24].trim().chars();
         let kind = stat.next().unwrap_or_default();
         let status = stat.next().unwrap_or_default();
         //TODO: this ID may not map to the CPUs detected from /scheme/sys/cpu
-        let cpu = line[31..36].trim().parse::<usize>().unwrap_or_default();
+        let cpu = line[25..30].trim().parse::<usize>().unwrap_or_default();
         let time =
             // Hours
-            line[47..49].parse::<u64>().unwrap_or_default() * 3600 * 1000 + 
+            line[41..43].parse::<u64>().unwrap_or_default() * 3600 * 1000 +
             // Minutes
-            line[50..52].parse::<u64>().unwrap_or_default() * 60 * 1000 +
+            line[44..46].parse::<u64>().unwrap_or_default() * 60 * 1000 +
             // Seconds
-            line[53..55].parse::<u64>().unwrap_or_default() * 1000 +
+            line[47..49].parse::<u64>().unwrap_or_default() * 1000 +
             // Centiseconds
-            line[56..58].parse::<u64>().unwrap_or_default() * 10;
-        let mut parts = line[59..67].trim().split(' ');
-        let mut mem = parts.next().unwrap_or_default().parse::<u64>().unwrap_or_default();
+            line[50..52].parse::<u64>().unwrap_or_default() * 10;
+        let mut parts = line[53..61].trim().split(' ');
+        let mut mem = parts
+            .next()
+            .unwrap_or_default()
+            .parse::<f64>()
+            .unwrap_or_default();
         match parts.next().unwrap_or_default() {
-            "B" => {},
-            "KB" => mem *= 1024,
-            "MB" => mem *= 1024 * 1024,
-            "GB" => mem *= 1024 * 1024 * 1024,
+            "B" => {}
+            "KB" => mem *= 1024.0,
+            "MB" => mem *= 1024.0 * 1024.0,
+            "GB" => mem *= 1024.0 * 1024.0 * 1024.0,
             suffix => {
                 sysinfo_debug!("unknown memory suffix {:?}", suffix);
             }
         }
-        let name = &line[67..];
+        let mem = mem as u64;
+        let name = &line[69..];
 
         //TODO: use TID or fill in tasks?
         //TODO: /proc not implemented so this path is not useful
         //TODO: fill in more fields
         let mut proc = proc_list.entry(pid).or_insert_with(|| Process {
-            inner: ProcessInner::new(pid)
+            inner: ProcessInner::new(pid),
         });
         let mut p = &mut proc.inner;
         if p.name.is_empty() {

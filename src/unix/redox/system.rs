@@ -212,18 +212,23 @@ impl SystemInner {
             return;
         }
         let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
-        if unsafe { libc::statvfs(CString::new("/scheme/memory").unwrap().as_ptr(), stat.as_mut_ptr()) } == 0 {
+        if unsafe {
+            libc::statvfs(
+                CString::new("/scheme/memory").unwrap().as_ptr(),
+                stat.as_mut_ptr(),
+            )
+        } == 0
+        {
             let stat = unsafe { stat.assume_init() };
             self.mem_total = stat.f_blocks as u64 * stat.f_bsize as u64;
             self.mem_free = stat.f_bfree as u64 * stat.f_bsize as u64;
             self.mem_available = stat.f_bavail as u64 * stat.f_bsize as u64;
             //TODO: other memory numbers
         }
-
     }
 
     pub(crate) fn cgroup_limits(&self) -> Option<crate::CGroupLimits> {
-        crate::CGroupLimits::new(self)
+        None
     }
 
     pub(crate) fn refresh_cpu_specifics(&mut self, refresh_kind: CpuRefreshKind) {
@@ -304,7 +309,6 @@ impl SystemInner {
         uptime()
     }
 
-
     pub(crate) fn boot_time() -> u64 {
         boot_time()
     }
@@ -330,7 +334,6 @@ impl SystemInner {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn name() -> Option<String> {
         get_system_info_linux(
             InfoType::Name,
@@ -339,19 +342,13 @@ impl SystemInner {
         )
     }
 
-    #[cfg(target_os = "android")]
-    pub(crate) fn name() -> Option<String> {
-        get_system_info_android(InfoType::Name)
-    }
-
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn long_os_version() -> Option<String> {
-        let mut long_name = "Linux".to_owned();
+        let mut long_name = "Redox".to_owned();
 
         let distro_name = Self::name();
         let distro_version = Self::os_version();
         if let Some(distro_version) = &distro_version {
-            // "Linux (Ubuntu 24.04)"
+            // "Redox (Redox OS 0.9.0)"
             long_name.push_str(" (");
             long_name.push_str(distro_name.as_deref().unwrap_or("unknown"));
             long_name.push(' ');
@@ -362,26 +359,6 @@ impl SystemInner {
             long_name.push_str(" (");
             long_name.push_str(distro_name);
             long_name.push(')');
-        }
-
-        Some(long_name)
-    }
-
-    #[cfg(target_os = "android")]
-    pub(crate) fn long_os_version() -> Option<String> {
-        let mut long_name = "Android".to_owned();
-
-        if let Some(os_version) = Self::os_version() {
-            long_name.push(' ');
-            long_name.push_str(&os_version);
-        }
-
-        // Android's name() is extracted from the system property "ro.product.model"
-        // which is documented as "The end-user-visible name for the end product."
-        // So this produces a long_os_version like "Android 15 on Pixel 9 Pro".
-        if let Some(product_name) = Self::name() {
-            long_name.push_str(" on ");
-            long_name.push_str(&product_name);
         }
 
         Some(long_name)
@@ -425,7 +402,6 @@ impl SystemInner {
         }
     }
 
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn os_version() -> Option<String> {
         get_system_info_linux(
             InfoType::OsVersion,
@@ -434,12 +410,6 @@ impl SystemInner {
         )
     }
 
-    #[cfg(target_os = "android")]
-    pub(crate) fn os_version() -> Option<String> {
-        get_system_info_android(InfoType::OsVersion)
-    }
-
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn distribution_id() -> String {
         get_system_info_linux(
             InfoType::DistributionID,
@@ -449,16 +419,6 @@ impl SystemInner {
         .unwrap_or_else(|| std::env::consts::OS.to_owned())
     }
 
-    #[cfg(target_os = "android")]
-    pub(crate) fn distribution_id() -> String {
-        // Currently get_system_info_android doesn't support InfoType::DistributionID and always
-        // returns None. This call is done anyway for consistency with non-Android implementation
-        // and to suppress dead-code warning for DistributionID on Android.
-        get_system_info_android(InfoType::DistributionID)
-            .unwrap_or_else(|| std::env::consts::OS.to_owned())
-    }
-
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn distribution_id_like() -> Vec<String> {
         system_info_as_list(get_system_info_linux(
             InfoType::DistributionIDLike,
@@ -467,22 +427,8 @@ impl SystemInner {
         ))
     }
 
-    #[cfg(target_os = "android")]
-    pub(crate) fn distribution_id_like() -> Vec<String> {
-        // Currently get_system_info_android doesn't support InfoType::DistributionIDLike and always
-        // returns None. This call is done anyway for consistency with non-Android implementation
-        // and to suppress dead-code warning for DistributionIDLike on Android.
-        system_info_as_list(get_system_info_android(InfoType::DistributionIDLike))
-    }
-
-    #[cfg(not(target_os = "android"))]
     pub(crate) fn kernel_name() -> Option<&'static str> {
-        Some("Linux")
-    }
-
-    #[cfg(target_os = "android")]
-    pub(crate) fn kernel_name() -> Option<&'static str> {
-        Some("Android kernel")
+        Some("Redox")
     }
 
     pub(crate) fn cpu_arch() -> Option<String> {
@@ -556,57 +502,6 @@ fn read_table_key(filename: &str, target_key: &str, colsep: char) -> Option<u64>
     }
 
     None
-}
-
-impl crate::CGroupLimits {
-    fn new(sys: &SystemInner) -> Option<Self> {
-        assert!(
-            sys.mem_total != 0,
-            "You need to call System::refresh_memory before trying to get cgroup limits!",
-        );
-        if let (Some(mem_cur), Some(mem_max), Some(mem_rss)) = (
-            // cgroups v2
-            read_u64("/sys/fs/cgroup/memory.current"),
-            // memory.max contains `max` when no limit is set.
-            read_u64("/sys/fs/cgroup/memory.max").or(Some(u64::MAX)),
-            read_table_key("/sys/fs/cgroup/memory.stat", "anon", ' '),
-        ) {
-            let mut limits = Self {
-                total_memory: sys.mem_total,
-                free_memory: sys.mem_free,
-                free_swap: sys.swap_free,
-                rss: mem_rss,
-            };
-
-            limits.total_memory = min(mem_max, sys.mem_total);
-            limits.free_memory = limits.total_memory.saturating_sub(mem_cur);
-
-            if let Some(swap_cur) = read_u64("/sys/fs/cgroup/memory.swap.current") {
-                limits.free_swap = sys.swap_total.saturating_sub(swap_cur);
-            }
-
-            Some(limits)
-        } else if let (Some(mem_cur), Some(mem_max), Some(mem_rss)) = (
-            // cgroups v1
-            read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
-            read_u64("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
-            read_table_key("/sys/fs/cgroup/memory/memory.stat", "total_rss", ' '),
-        ) {
-            let mut limits = Self {
-                total_memory: sys.mem_total,
-                free_memory: sys.mem_free,
-                free_swap: sys.swap_free,
-                rss: mem_rss,
-            };
-
-            limits.total_memory = min(mem_max, sys.mem_total);
-            limits.free_memory = limits.total_memory.saturating_sub(mem_cur);
-
-            Some(limits)
-        } else {
-            None
-        }
-    }
 }
 
 #[derive(PartialEq, Eq)]

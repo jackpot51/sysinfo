@@ -388,10 +388,10 @@ pub(crate) fn refresh_procs(
     }
 
     /* Example data from /scheme/proc/ps:
-    PID   PGID  PPID  SID   RUID  RGID  RNS   EUID  EGID  ENS   NTHRD STATUS  NAME
-    1     1     1     1     0     0     1     0     0     1     1     R       /scheme/initfs/bin/init
-    4     1     1     1     0     0     0     0     0     0     1     R       /bin/nulld
-    0     6     12    18    24    30    36    42    48    54    60    66      74
+    PID   PGID  PPID  SID   RUID  RGID  EUID  EGID  NTHRD STATUS  NAME
+    1     1     1     1     0     0     0     0     1     R       /scheme/initfs/bin/init
+    2     1     1     1     0     0     0     0     2     R       /scheme/initfs/bin/logd
+    0     6     12    18    24    30    36    42    48    54      62
     Indexes listed above
     */
     for line in proc_ps.lines().skip(1) {
@@ -401,10 +401,10 @@ pub(crate) fn refresh_procs(
         let ppid = line[12..18].trim().parse::<Pid>().ok();
         let ruid = line[24..30].trim().parse::<libc::uid_t>().map(Uid).ok();
         let rgid = line[30..36].trim().parse::<libc::gid_t>().map(Gid).ok();
-        let euid = line[42..48].trim().parse::<libc::uid_t>().map(Uid).ok();
-        let egid = line[48..54].trim().parse::<libc::gid_t>().map(Gid).ok();
-        let status = line[66..74].trim().chars().next().unwrap_or_default();
-        let name = &line[74..];
+        let euid = line[36..42].trim().parse::<libc::uid_t>().map(Uid).ok();
+        let egid = line[42..48].trim().parse::<libc::gid_t>().map(Gid).ok();
+        let status = line[54..62].trim().chars().next().unwrap_or_default();
+        let name = &line[62..];
 
         //TODO: use TID or fill in tasks?
         //TODO: /proc not implemented so this path is not useful
@@ -503,8 +503,11 @@ pub(crate) fn refresh_procs(
         if p.name.is_empty() {
             p.name = name.into();
         }
-        p.memory += mem;
-        p.virtual_memory += mem;
+        // This ensures memory is not double counted by only adding it from one thread
+        if p.memory == 0 {
+            p.memory += mem;
+            p.virtual_memory += mem;
+        }
         if p.effective_user_id.is_none() {
             p.effective_user_id = euid;
         }
